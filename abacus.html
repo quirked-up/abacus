@@ -1,0 +1,761 @@
+<!DOCTYPE HTML>
+<html>
+	<head>
+		<meta charset="UTF-8">
+		<title>Abacus machine</title>
+		<style type="text/css">
+			html {
+				background: #222;
+				overflow: hidden;
+			}
+			canvas {
+				position: fixed;
+				left: 0;
+				top: 0;
+/*				border: solid 1px black;*/
+			}
+			details {
+				position: fixed;
+				background: #ccc;
+				padding: 0.5em;
+				border-radius: 1em;
+			}
+			table {
+				border-collapse: collapse;
+			}
+			.tablewrap {
+				overflow-y: auto;
+				max-height: 80vh;
+			}
+			td, th {
+				padding: 2px;
+			}
+			table td:first-child, table th:first-child {
+				border-right: solid 1px currentColor;
+				text-align: right;
+			}
+			table input {
+				width: 7em;
+			}
+		</style>
+	</head>
+	<body>
+		<details>
+			<summary></summary>
+			<button onclick="reset()">reset</button><button onclick="clearvars()">clear</button><button onclick="addvars()">add all</button>
+			<div class=tablewrap><table><thead><tr><th>Variable</th><th>Value</th></tr></thead><tbody id="vartable" oninput=tableinput(event)></tbody></table></div>
+			<hr>
+			<button onclick="step()">step</button><button onclick="run()">run</button><button onclick="quickrun()">quickrun</button><button onclick="gotostart()">to start</button>
+		</details>
+		<canvas id=canvas></canvas>
+		<script>
+// ur saying spaggheti can code?!?!?
+
+encode = code => parseInt(code.split('').map(c => "[].,+-<>".indexOf(c)).toReversed().join(''), 8)
+/*
+{
+let bubbleUnique = bubbles.map((bubble,i)=>!bubbles.slice(0,i-1).some(other => other.toString() === bubble.toString()))
+for (let i=bubbles.length-1; i>=0; i--)
+if (!bubbleUnique[i]) bubbles.splice(i, 1);
+}
+*/
+const canv = document.getElementById('canvas'),
+ctx = canv.getContext('2d');
+
+var camerax = 0, cameray = 0, camerascale = 0.5
+const bubbles = [], decor = [];
+const variables = {};
+var lastvarname = "A"
+var mousedown = false
+document.addEventListener('mousedown', ()=> mousedown = true);
+document.addEventListener('mouseup', ()=> mousedown = false);
+
+var selected, active
+canv.addEventListener("dblclick", e=>{
+	let pos = screenToPos(e);
+	let obj = raycast(pos)
+	if (obj) {
+		if (obj === selected)
+			active = obj;
+		render();
+		return
+	};
+	selected = new Bubble({
+		...pos,
+		text: "x+",
+	});
+	if (lastSelected2 instanceof Bubble && e.ctrlKey)
+		lastSelected2.e = selected;
+	else if (lastSelected2 instanceof Bubble && e.shiftKey)
+		lastSelected2.to = selected;
+	render();
+})
+
+var lastSelected, lastSelected2
+var selectionrect
+var start, last
+var lastMousedownPos
+canv.addEventListener("mousedown", e=>{
+	let pos = screenToPos(e);
+	let obj = raycast(pos);
+	lastMousedownPos = pos;
+	if (!obj) {
+		if (selected instanceof Bubble && e.ctrlKey)
+			selected.e = null;
+		if (selected instanceof Bubble && e.shiftKey)
+			selected.to = null;
+		lastSelected2 = lastSelected
+		lastSelected = selected
+		selected = null;
+		selectionrect = [pos.x, pos.y]
+	} else if (obj instanceof Objekto) {
+		if (selected instanceof Array && selected.includes(obj)) return;
+		if (selected instanceof Bubble && e.ctrlKey)
+			selected.e = obj;
+		else if (selected instanceof Bubble && e.shiftKey)
+			selected.to = obj;
+		selected = obj;
+	}
+
+	render()
+})
+var clipboard
+document.addEventListener("paste", e=>{
+	clipboard = (e.clipboardData || window.clipboardData).getData("text");
+})
+canv.addEventListener("mouseup", e=>{
+	if (selectionrect && selectionrect.length === 5 && selectionrect[4]) {
+		let [x, y, ex, ey] = selectionrect;
+		if (ex < x) [x, ex] = [ex, x];
+		if (ey < y) [y, ey] = [ey, y];
+		const [width, height] =  [ex - x, ey - y];
+		new Box({x,y,width,height});
+		selected = null;
+	}
+	selectionrect = null;
+	lastMousedownPos = null;
+	render()
+})
+
+const customnames = {};
+var breakpoints = new Set();
+document.addEventListener("keyup", e=>{
+	if (selected instanceof Bubble) {
+		if ("a" <= e.key && e.key <= "z" && !e.ctrlKey) {
+			lastvarname = selected.var = e.key.toUpperCase();
+		}
+		if (e.key === "0")
+			lastvarname = selected.var = prompt("Enter variable name:") ?? "?";
+		if ("1" <= e.key && e.key <= "9"){
+			if (e.ctrlKey || customnames[e.key] == undefined)
+				customnames[e.key] = prompt("Enter variable name:");
+			lastvarname = selected.var = customnames[e.key] ?? "?"
+		}
+
+		if (e.key === "+" || e.key === "=")
+			selected.type = "+";
+		if (e.key === "-")
+			selected.type = "-";
+		if (e.key === "C")
+			selected.type = "connection"
+		if (e.key === "A")
+			selected.type = "anchor"
+		if (e.key === "T")
+			selected.type = "text"
+
+		if (e.key === "S")
+			start = selected
+
+		if (e.key === "H")
+			if (breakpoints.has(selected))
+				breakpoints.delete(selected)
+			else
+				breakpoints.add(selected)
+
+		if (e.key == ".")
+			selected.var += "'";
+		if (e.key == ",")
+			if (selected.var.endsWith("'"))
+				selected.var = selected.var.slice(0,-1);
+			else
+				selected.var += "'";
+
+		render();
+	}
+	if (e.key === "Backspace" || e.key === "Delete") {
+		if (selected === null) return
+		const selectedArr = (selected instanceof Array ? selected : [selected]).slice(0)
+		selectedArr.forEach(obj => obj.delete());
+		render();
+	}
+
+	if (e.key === "c" && e.ctrlKey) navigator.clipboard.writeText(copy(selected));
+	if (e.key === "v" && e.ctrlKey) paste(clipboard);
+	if (e.key === "a" && e.ctrlKey) { selected = bubbles.concat(decor); render(); } 
+	if (e.key === "y" && e.ctrlKey) { last = active; render(); } 
+	if ((e.key === "s" || e.key === "e") && e.ctrlKey) window.location.hash = copy(bubbles.concat(decor)); 
+
+	if (e.key === "Shift" && selectionrect && selectionrect.length === 5) { selectionrect[4] = 1; render() }
+})
+document.addEventListener("keydown", e=>{
+	if (e.key === "Shift" && selectionrect && selectionrect.length === 5) { selectionrect[4] = 0; render() }
+})
+function copy(selected = selected) {
+	if (selected instanceof Bubble) {
+		navigator.clipboard.writeText(selected.toString());
+	} else if (selected instanceof Array) {
+		const data = []
+		const obj_list = []
+		selected.forEach(obj=>{
+			if (obj instanceof Bubble) {
+				obj_list.push(obj);
+				data.push([Math.round(obj.x),Math.round(obj.y), obj.var,obj.type]);
+			} else if (obj instanceof Box)
+				data.push([obj.x, obj.y, obj.width, obj.height].map(Math.round).concat(obj.color));
+		})
+		selected.forEach(obj=>{
+			if (!(obj instanceof Bubble)) return;
+			if (obj.e)
+				data.push([obj_list.indexOf(obj), obj_list.indexOf(obj.e), 0]);
+			if (obj.to)
+				data.push([obj_list.indexOf(obj), obj_list.indexOf(obj.to), 1]);
+		})
+		return JSON.stringify(data).replaceAll("%", "%25");
+	}
+}
+async function paste(text) {
+	if (/^\(([0-9.]+),([0-9.]+),(.+)([+-])\)$/.test(text)) {
+		const [_, x, y, variable, type] = text.match(/^\((\d+),(\d+),(.+)([+-])\)$/)
+		selected = new Bubble({x:+x+70,y,variable,type});
+		render();
+		return
+	}
+	let objects = JSON.parse(text);
+	selected = [];
+	for (let i=0; i<objects.length; i++) {
+		let obj = objects[i];
+		if (obj.length === 4) {
+			selected.push(new Bubble(
+				{x: obj[0], y: obj[1], variable: obj[2], type: obj[3]}
+			));
+		} else if (obj.length === 5) {
+			selected.push(new Box(
+				{x: obj[0], y: obj[1], width: obj[2], height: obj[3], color: obj[4]}
+			));
+		} else if (obj.length === 3) {
+			if (obj[2])
+				selected[obj[0]].to = selected[obj[1]];
+			else
+				selected[obj[0]].e = selected[obj[1]];
+		}
+	}
+	render();
+}
+
+canv.addEventListener("wheel", e=>{
+	const new_camerascale = Math.exp(Math.log(camerascale) - (e.deltaY / 1000))
+	// preserve current mouse coords - logical coords
+	const x = e.clientX - canv.getBoundingClientRect().x
+	const y = e.clientY - canv.getBoundingClientRect().y
+	// currently, mouse is on x/camerascale+camerax.
+	camerax += x/camerascale - x/new_camerascale
+	cameray += y/camerascale - y/new_camerascale
+
+	camerascale = new_camerascale
+	render()
+})
+canv.addEventListener("mousemove", e=>{
+	if (!mousedown) return;
+
+	const pos = screenToPos(e);
+
+	if (selectionrect && !e.shiftKey) {
+		[selectionrect[2], selectionrect[3], selectionrect[4]] = [pos.x, pos.y, +e.ctrlKey];
+	}
+
+	if (selected instanceof Objekto || (selected instanceof Array && selectionrect === null && !e.shiftKey)) {
+		if (selected instanceof Objekto) {
+			var wasSingleton = true;
+			if (e.ctrlKey) {
+				selected.x = toNearest(selected.x, 10);
+				selected.y = toNearest(selected.y, 10);
+			}
+			selected = [selected]
+		}
+		if (e.ctrlKey) {
+			pos.x = toNearest(pos.x - lastMousedownPos.x, 10) + lastMousedownPos.x
+			pos.y = toNearest(pos.y - lastMousedownPos.y, 10) + lastMousedownPos.y
+		}
+		selected.forEach(obj => {
+			obj.x = obj.x + pos.x - lastMousedownPos.x;
+			obj.y = obj.y + pos.y - lastMousedownPos.y;
+		});
+		lastMousedownPos = pos;
+
+		if (wasSingleton)
+			selected = selected[0];
+	}
+	if (e.shiftKey && selected === null) {
+		camerax -= pos.x - lastMousedownPos.x
+		cameray -= pos.y - lastMousedownPos.y
+	}
+	render();
+})
+function toNearest(n, multiple) {
+	return Math.round(n/multiple)*multiple
+}
+
+function screenToPos({x, y}) {
+	let canvPos = canv.getBoundingClientRect()
+	return {
+		x: (x - canvPos.x)/camerascale + camerax,
+		y: (y - canvPos.y)/camerascale + cameray,
+	}
+}
+function posToCanv(x, y, ...rest) {
+	if (rest.length > 0) return posToCanv(x,y).concat(Array(Math.floor(rest.length/2)).fill(0).flatMap((_,i)=>posToCanv(rest[i*2],rest[i*2+1])))
+	return [(x - camerax)*camerascale, (y - cameray)*camerascale]
+}
+function raycast({x, y}) {
+	for (let i=bubbles.length-1; i>=0; i--)
+		if (Math.hypot(bubbles[i].x - x, bubbles[i].y - y) <= 20 + 15/camerascale)
+			return bubbles[i];
+
+	for (let i=decor.length-1; i>=0; i--) {
+		const d = decor[i];
+		if (nearLine(d.x, d.width, d.y, x, y)
+		 || nearLine(d.x, d.width, d.y+d.height, x, y)
+		 || nearLine(d.y, d.height, d.x, y, x)
+		 || nearLine(d.y, d.height, d.x+d.width, y, x)
+		 )
+			return d;
+	}
+}
+
+function nearLine(start, length, line_y, position, pos_y) {
+	return start <= position && position <= start+length && line_y - 15 <= pos_y && pos_y <= line_y + 15 
+
+}
+class Objekto {
+
+}
+class Bubble extends Objekto {
+	constructor({x, y, variable=lastvarname, type="+"}) {
+		super();
+		this.x = +x;
+		this.y = +y;
+		this.var = variable;
+		this.type = type;
+		bubbles.push(this);
+	}
+	delete() {
+		if (bubbles.includes(this))
+			bubbles.splice(bubbles.indexOf(this), 1);
+		bubbles.forEach(bubble=>{
+			if (bubble.e === this) bubble.e = null;
+			if (bubble.to === this) bubble.to = null;
+		})
+		if (active === this) active = null;
+		if (selected === this) selected = null;
+		if (start === this) start = null;
+		if (selected instanceof Array && selected.includes(this)) 
+			selected.splice(selected.indexOf(this), 1);
+	}
+	toString() {
+		return `(${this.x},${this.y},${this.var}${this.type})`
+	}
+}
+class Box extends Objekto {
+	constructor({x, y, width, height, color="white"}) {
+		super();
+		this.x = +x;
+		this.y = +y;
+		this.width = +width;
+		this.height = +height;
+		this.color = color;
+		decor.push(this);
+	}
+	delete() {
+		if (decor.includes(this))
+			decor.splice(decor.indexOf(this), 1);
+		if (active === this) active = null;
+		if (selected === this) selected = null;
+		if (start === this) start = null;
+		if (selected instanceof Array && selected.includes(this)) 
+			selected.splice(selected.indexOf(this), 1);
+	}
+	toString() {
+		return `[${this.x},${this.y},${this.width}x${this.height},${this.color}]`
+	}
+}
+
+function resize() {
+	canvas.width = window.innerWidth;
+	canvas.height = window.innerHeight;
+} resize();
+
+function render() {
+	resize()
+	ctx.clearRect(0, 0, 9_000, 9_000);
+	bubbles.forEach(bubble=>{
+		if (bubble.to)
+			drawArc(bubble, bubble.to);
+		if (bubble.type === "-" && bubble.e)
+			drawArc(bubble, bubble.e, true);
+	})
+	decor.forEach(drawdecor);
+	bubbles.forEach(drawbubble);
+
+	if (selectionrect && selectionrect.length === 5) {
+		ctx.strokeStyle = selectionrect[4] ? "#f88" : "#888"
+		ctx.lineWidth = 1 + selectionrect[4]
+		let [sx, sy, ex, ey] = selectionrect;
+		if (ex < sx) [sx, ex] = [ex, sx];
+		if (ey < sy) [sy, ey] = [ey, sy];
+		ctx.strokeRect(...posToCanv(sx, sy), (ex-sx)*camerascale, (ey-sy)*camerascale);
+
+		selected = selectionrect[4] ? []
+		:	bubbles.filter(({x,y}) => sx-15 <= x&&x <= ex+15 && sy-15 <= y&&y <= ey+15)
+			.concat(decor.filter(({x,y,width,height})=> sx-15 <= x && x+width <= ex+15 && sy-15 <= y && y+height <= ey+15));
+
+	}
+}
+
+var hideMarkers = false;
+function drawbubble(bubble) {
+	const {x, y} = bubble;
+	var text = bubble.var+bubble.type;		
+
+	const pos = posToCanv(x,y)
+
+	if (bubble === last) {
+		ctx.fillStyle = "yellow"
+		ctx.beginPath();
+		ctx.arc(pos[0], pos[1], 30*camerascale, 0, 3*Math.PI);
+		ctx.fill();
+	}
+
+	if (selected && (selected === bubble || (selected.includes && selected.includes(bubble)))) {
+		ctx.lineWidth = Math.max(5 * camerascale, 3);
+		ctx.strokeStyle = "#f00";
+	} else {
+		ctx.lineWidth = 3 * camerascale;
+		ctx.strokeStyle = breakpoints.has(bubble) ? "orange" : (bubble.type === "-" ? "#1e7" : "#17e");
+	}
+
+	if (bubble.type === "connection") {
+		if (bubble === active) return;
+		ctx.fillStyle = ctx.strokeStyle
+		ctx.beginPath();
+		ctx.arc(pos[0], pos[1], 10*camerascale, 0, 3*Math.PI);
+		ctx.fill();
+		return
+	}
+	if (bubble.type === "anchor") {
+		if (hideMarkers) return
+		ctx.beginPath();
+		ctx.moveTo(pos[0] - 10*camerascale, pos[1] - 10*camerascale)
+		ctx.lineTo(pos[0] + 10*camerascale, pos[1] + 10*camerascale)
+		ctx.moveTo(pos[0] + 10*camerascale, pos[1] - 10*camerascale)
+		ctx.lineTo(pos[0] - 10*camerascale, pos[1] + 10*camerascale)
+		ctx.stroke();
+		return
+	}
+	ctx.fillStyle = "#333";
+
+	if (bubble.type !== "text") {
+		ctx.beginPath();
+		ctx.arc(pos[0], pos[1], 30*camerascale, 0, 3*Math.PI);
+		ctx.fill();
+		ctx.stroke();
+		if (bubble === start) {
+			ctx.beginPath();
+			ctx.arc(pos[0], pos[1], 37*camerascale, 0, 3*Math.PI);
+			ctx.stroke();
+		}
+	}
+
+
+	if (bubble === last) {
+		ctx.fillStyle = "yellow"
+		ctx.beginPath();
+		ctx.arc(pos[0], pos[1], 30*camerascale, 0, 3*Math.PI);
+		ctx.fill();
+	}
+	
+
+	if (bubble === active) {
+		ctx.fillStyle = "#eee";
+	} else {
+		ctx.fillStyle = bubble.type === "-" ? "#4fb" : "#4bf";
+	}
+
+	if (bubble.type === "text")
+		text = bubble.var;
+
+	let fontsize = 32
+	ctx.font = `${fontsize}px Monospace`;
+
+	if (ctx.measureText(text).width > 50)
+		fontsize = 26
+	if (ctx.measureText(text).width > 80)
+		fontsize = 20
+	
+	if (bubble.type === "text") {
+		fontsize *= 2;
+		if (bubble == selected || (selected && selected.includes && selected.includes(bubble)))
+			ctx.fillStyle = "#f88";
+	}
+
+	fontsize *= camerascale
+	ctx.font = `${fontsize}px Monospace`;
+	if (bubble.type === "text")
+		ctx.clearRect(...posToCanv(x-ctx.measureText(text).width/camerascale/2, y-fontsize/camerascale/2-5), (ctx.measureText(text).width+5), fontsize+5)
+	ctx.strokeStyle = "#333"
+	ctx.strokeText(text, ...posToCanv(x-ctx.measureText(text).width/camerascale/2, y+fontsize/camerascale/2-5))
+	ctx.fillText(text, ...posToCanv(x-ctx.measureText(text).width/camerascale/2, y+fontsize/camerascale/2-5))
+}
+
+theta = 0.19 * Math.PI
+function drawArc(start, end, e=false) {
+	if (end == null) return;
+	ctx.strokeStyle = e ? "#faa" : "#fff";
+	ctx.fillStyle = ctx.strokeStyle;
+	ctx.lineWidth = 2.5 * camerascale;
+
+	if (start.type === "anchor") return;
+	if (end.type === "anchor" && end.to) {
+		var a1 = end;
+		if (a1.to.type === "anchor" && a1.to.to)
+			var a2 = a1.to;
+		else
+			var a2 = a1;
+		end = a2.to;
+	}
+
+	let length = Math.hypot(end.x-start.x, end.y-start.y),
+		dx = (end.x-start.x)/length,
+		dy = (end.y-start.y)/length;
+	if (a2) {
+		length = Math.hypot(end.x-a2.x, end.y-a2.y);
+		dx = (end.x-a2.x)/length;
+		dy = (end.y-a2.y)/length;
+	}
+
+	ctx.beginPath();
+	ctx.moveTo(...posToCanv(start.x, start.y));
+	let r = end.type === "connection" ? 10 : 35
+	if (a1)
+		ctx.bezierCurveTo(...posToCanv(a1.x, a1.y, a2.x, a2.y, end.x, end.y));
+	else
+		ctx.lineTo(...posToCanv(end.x - dx*r, end.y - dy*r));
+	ctx.stroke();
+
+	if (start === end && !a1) {
+		dy = -Math.sin(theta)
+		dx = Math.cos(theta)
+		ctx.beginPath();
+		ctx.moveTo(...posToCanv(start.x-25, start.y+15))
+		ctx.bezierCurveTo(...posToCanv(start.x-85, start.y+70, start.x+70, start.y+70, start.x+25, start.y+5))
+		ctx.stroke();
+	}
+	let scale = end.type === "connection" ? 10 : 31.5;
+	ctx.beginPath();
+	ctx.moveTo(...posToCanv(end.x - scale*dx, end.y - scale*dy));
+	ctx.lineTo(...posToCanv(end.x - (scale+15)*dx +8*dy, end.y - (scale+15)*dy -8*dx));
+	ctx.lineTo(...posToCanv(end.x - (scale+15)*dx -8*dy, end.y - (scale+15)*dy +8*dx));
+	ctx.fill();
+
+	if (e) {
+		if (hideMarkers && a2) return;
+		ctx.fillStyle = "#e72";
+		ctx.font = `${24*camerascale}px Monospace`;
+		ctx.fillText("e", ...posToCanv( (start.x+end.x)/2- dy*15 -ctx.measureText("e").width/camerascale/2 , (start.y+end.y)/2 + dx*15 + 5 ) )
+	}
+}
+
+
+function drawdecor(decoration) {
+	if (decoration instanceof Box) {
+		const box = decoration;
+		ctx.lineWidth = 3 * camerascale;
+		ctx.strokeStyle = box.color;
+		if (selected && (selected === box || (selected.includes && selected.includes(box)))) {
+			ctx.strokeStyle = "red";
+			ctx.lineWidth = 5 * camerascale;
+		}
+		ctx.setLineDash([5,5])
+		ctx.beginPath();
+		ctx.moveTo(...posToCanv(box.x, box.y));
+		ctx.lineTo(...posToCanv(box.x + box.width, box.y));
+		ctx.lineTo(...posToCanv(box.x + box.width, box.y + box.height));
+		ctx.lineTo(...posToCanv(box.x, box.y + box.height));
+		ctx.lineTo(...posToCanv(box.x, box.y));
+		ctx.stroke();
+		ctx.setLineDash([])
+	}
+}
+
+function step() {
+	if (active == null) 
+		return;
+	variables[active.var] ??= 0;
+
+	for (var i=0; i<vartable.rows.length; i++)
+		if (vartable.rows[i].cells[0].innerText === active.var)
+			break;
+
+	const x = active.var
+	if (active.type === "+") {
+		variables[x]++;
+		active = active.to;
+	} else if (active.type === "-") {
+		if (variables[x]) {
+			variables[x]--;
+			active = active.to;
+		} else
+			active = active.e;
+	} else
+			active = active.to;
+	render();
+
+	if (i === vartable.rows.length) {
+		vartable.insertRow().innerHTML = `<td>${x.replaceAll("<","&lt;")}</td><td><input type=number value=0 min=0 step=1></td>`
+	}
+	vartable.rows[i].cells[1].firstElementChild.value = variables[x]
+}
+var HALT_STEPS = 10_000_000, REFRESH_STEPS = 100_000
+async function run() {
+	var t = 0
+	while (active != null)  {
+		last = active
+		if (++t % REFRESH_STEPS === REFRESH_STEPS-1) { render(); writevars(); await new Promise(res=>setTimeout(res,0)) }
+		if (t === HALT_STEPS) { render(); writevars(); return alert("Halted!"); }
+		variables[active.var] ??= 0;
+		if (active.type === "+") {
+			variables[active.var]++;
+			active = active.to;
+		} else if (active.type === "-") {
+			if (variables[active.var]) {
+				variables[active.var]--;
+				active = active.to;
+			} else
+				active = active.e;
+		} else
+			active = active.to;
+		if (breakpoints.has(active)) break;
+	}
+	render();
+	writevars();
+}
+async function quickrun() {
+	var t = 0
+	var current_cycle = []
+	while (active != null)  {
+		last = active
+		if (current_cycle.includes(active)) {
+			// optimise cycle
+			let vars = [];
+			let mins = [];
+			let nets = [];
+			for (const bubble of current_cycle) {
+				if (!vars.includes(bubble.var)) {
+					vars.push(bubble.var);
+					nets.push(0);
+					mins.push(0);
+				}
+				const i = vars.indexOf(bubble.var);
+				if (bubble.type === "+") nets[i]++;
+				if (bubble.type === "-") nets[i]--;
+				mins[i] = Math.min(nets[i], mins[i]);
+			}
+			let loops = Infinity;
+			for (let i=0; i<vars.length; i++)
+				 Math.min(loops, Math.floor((variables[vars[i]]+mins[i])/nets[i]));
+			for (let i=0; i<vars.length; i++) {
+				if (mins[i] < -variables[vars[i]]) { loops = 0; break; }
+				if (nets[i] >= 0) continue;
+				loops = Math.min(loops, Math.ceil(-(variables[vars[i]]+mins[i])/nets[i]));
+			}
+			if (loops === Infinity) return alert("Halted at infinite loop!");
+			for (let i=0; i<vars.length; i++)
+				variables[vars[i]] += nets[i] * loops;
+			current_cycle = [];
+		}
+
+		current_cycle.push(active)
+		if (++t % REFRESH_STEPS === REFRESH_STEPS-1) { render(); writevars(); await new Promise(res=>setTimeout(res,0)) }
+		if (t === HALT_STEPS) { render(); writevars(); return alert("Halted!"); }
+		variables[active.var] ??= 0;
+		if (active.type === "+") {
+			variables[active.var]++;
+			active = active.to;
+		} else if (active.type === "-") {
+			if (variables[active.var]) {
+				variables[active.var]--;
+				active = active.to;
+			} else {
+				current_cycle = []
+				active = active.e;
+			}
+		} else
+			active = active.to;
+		if (breakpoints.has(active)) break;
+	}
+	render();
+	writevars();
+}
+
+function writevars() {
+	for (const [varname, value] of Object.entries(variables)) {
+		for (var i=0; i<vartable.rows.length; i++)
+			if (vartable.rows[i].cells[0].innerText === varname)
+				break;
+		if (i === vartable.rows.length)
+			vartable.insertRow().innerHTML = `<td>${varname.replaceAll("<","&lt;")}</td><td><input type=number value=0 min=0 step=1></td>`;
+
+		vartable.rows[i].cells[1].firstElementChild.value = value;
+	}
+}
+
+
+if (window.location.hash) {
+	paste(decodeURI(location.hash.slice(1)));
+	selected = [];
+}
+
+render()
+// setInterval(render, 100)
+
+function tableinput(e) {
+	let n = Number(e.target.value);
+	if (isNaN(n)) n = e.target.value = 0;
+	let varname = e.target.parentElement.parentElement.firstChild.innerText;
+	variables[varname] = n;
+}
+
+function clearvars() {
+	vartable.innerHTML = "";
+	Object.keys(variables).forEach(varname => delete variables[varname])
+}
+function addvars() {
+	[...new Set(bubbles.filter(bubble => "+-".includes(bubble.type)).map(bubble => bubble.var))].toSorted((a,b)=>(a>b)+((b.length==1)-(a.length==1))*2-(b.endsWith("'")-(a.endsWith("'")))*3).forEach(varname=>{
+		variables[varname] ??= 0;
+		for (var i=0; i<vartable.rows.length; i++)
+			if (vartable.rows[i].cells[0].innerText === varname)
+				break;
+		if (i === vartable.rows.length)
+			vartable.insertRow().innerHTML = `<td>${varname.replaceAll("<","&lt;")}</td><td><input type=number value=${variables[varname]} min=0 step=1></td>`;
+	})
+}
+
+function reset() {
+	Object.keys(variables).forEach(varname => variables[varname] = 0);
+	[...vartable.rows].forEach(row=>row.cells[1].firstChild.value = 0);
+	active = start;
+	render()
+}
+function gotostart() { active=start; last=null; render(); }
+		</script>
+	</body>
+ </html>	
